@@ -101,8 +101,8 @@ export async function fetchDispatchedOrders(opts: { pageSize?: number; page?: nu
  */
 export async function discoverStatuses(): Promise<{ statusId: number; count: number; sample?: any }[]> {
   const results: { statusId: number; count: number; sample?: any }[] = [];
-  // Check statuses 1 through 10
-  for (let sid = 1; sid <= 10; sid++) {
+  // Check statuses 1 through 30 to be thorough
+  for (let sid = 1; sid <= 30; sid++) {
     try {
       const orders = await fetchOrdersByStatus(sid, 5, 1);
       if (orders.length > 0) {
@@ -118,14 +118,20 @@ export async function discoverStatuses(): Promise<{ statusId: number; count: num
             CourierServiceName: orders[0].CourierServiceName,
           },
         });
-      } else {
-        results.push({ statusId: sid, count: 0 });
       }
     } catch (e: any) {
       results.push({ statusId: sid, count: -1, sample: { error: String(e?.message ?? e).slice(0, 200) } });
     }
   }
   return results;
+}
+
+/**
+ * Page-by-page fetch for a single status. Returns one page of results.
+ * Caller controls pagination + when to stop (e.g. on date cutoff).
+ */
+export async function fetchOrdersPage(statusId: number, page: number, pageSize = 200): Promise<MintsoftOrder[]> {
+  return fetchOrdersByStatus(statusId, pageSize, page);
 }
 
 /**

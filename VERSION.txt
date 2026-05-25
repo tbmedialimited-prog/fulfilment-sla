@@ -1,14 +1,15 @@
-v6-multi-status
+v7-backfill
 Built: 2026-05-25
-Changes from v5:
-  - Mintsoft sync now pulls statuses 4, 5, 6 (Dispatched + Invoiced + Completed)
-    instead of just status 4. This catches orders that moved past "Dispatched"
-    after their dispatch day.
-  - Added /api/discover-statuses to identify which OrderStatusId values exist
-    in your Mintsoft account. Visit it once to confirm the right IDs.
-  - MINTSOFT_DISPATCHED_STATUSES env var lets you override (default "4,5,6").
+Changes from v6:
+  - NEW: /api/backfill endpoint for loading historical orders (30 days back)
+    * Paginates through Mintsoft statuses 4, 5, 6
+    * Resumable: returns "next_url" if it ran out of time before finishing
+    * Capped to BACKFILL_DAYS=30 days back (configurable via env var)
+  - Status discovery now scans 1-30 instead of 1-10
+  - Daily cron unchanged (it just catches yesterday's new orders)
 
-After deploying:
-  1. Visit /api/discover-statuses to see which statuses have data
-  2. Visit /api/cron to trigger a fresh sync (will pull all dispatched + invoiced + completed)
-  3. Watch order count grow significantly past 133
+USAGE:
+  1. Visit /api/backfill
+  2. If response has "done": false, click next_url
+  3. Repeat until "done": true
+  4. Each call processes ~50 seconds; you may need 5-15 calls for 30 days of data
