@@ -1,0 +1,9 @@
+v3-debug-route
+Built: 2026-05-25
+Changes from v2:
+  - Added /api/debug endpoint for diagnostics
+  - Fixed Neon Postgres timestamp parsing in lib/storage.ts (normalizeTs helper)
+  - rowToOrder no longer relies on instanceof Date check (Neon returns strings)
+
+If you can hit https://YOUR-APP.vercel.app/api/debug and get JSON back (not 404),
+this version is deployed.
