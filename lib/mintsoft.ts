@@ -43,22 +43,89 @@ async function mintsoftRequest<T>(path: string, params: Record<string, string | 
 }
 
 /**
- * Fetch dispatched orders. We use OrderStatusId=4 (Dispatched) which is the
- * status confirmed by inspecting your real Mintsoft data.
+ * Fetch orders by a specific status. Mintsoft requires OrderStatusId filter.
  */
-export async function fetchDispatchedOrders(opts: { pageSize?: number; page?: number } = {}): Promise<MintsoftOrder[]> {
-  const pageSize = opts.pageSize ?? 200;
-  const page = opts.page ?? 1;
+async function fetchOrdersByStatus(statusId: number, pageSize = 200, page = 1): Promise<MintsoftOrder[]> {
   const data = await mintsoftRequest<MintsoftOrder[] | { Results?: MintsoftOrder[] }>(
     "/api/Order/List",
     {
       PageSize: pageSize,
       PageNumber: page,
-      OrderStatusId: 4,
+      OrderStatusId: statusId,
     }
   );
   if (Array.isArray(data)) return data;
-  return data.Results ?? [];
+  return (data as any).Results ?? [];
+}
+
+/**
+ * Pull dispatched orders across all relevant statuses.
+ * Mintsoft lifecycle: New(1) -> Printed(2) -> Picked(3) -> Dispatched(4) -> Invoiced(5) -> Completed(6).
+ * Once dispatched, orders move on to Invoiced/Completed quickly, so filtering only by
+ * status=4 loses everything from yesterday onwards.
+ *
+ * We fetch all "post-dispatch" statuses (4, 5, 6) and only keep orders with a DespatchDate.
+ * Returns deduplicated orders by ID.
+ */
+export async function fetchDispatchedOrders(opts: { pageSize?: number; page?: number } = {}): Promise<MintsoftOrder[]> {
+  const pageSize = opts.pageSize ?? 200;
+  const page = opts.page ?? 1;
+
+  // Statuses to pull. Override via env var if Mintsoft uses different IDs.
+  const statusIdsRaw = process.env.MINTSOFT_DISPATCHED_STATUSES || "4,5,6";
+  const statusIds = statusIdsRaw.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+
+  const seen = new Set<number>();
+  const out: MintsoftOrder[] = [];
+
+  for (const sid of statusIds) {
+    try {
+      const orders = await fetchOrdersByStatus(sid, pageSize, page);
+      for (const o of orders) {
+        if (!o.ID || seen.has(o.ID)) continue;
+        // Only keep orders that have actually been dispatched
+        if (!o.DespatchDate) continue;
+        seen.add(o.ID);
+        out.push(o);
+      }
+    } catch (e) {
+      console.warn(`Mintsoft status=${sid} fetch failed:`, e);
+      // Continue with other statuses
+    }
+  }
+  return out;
+}
+
+/**
+ * Diagnostic: fetch a small sample from various statuses to discover what IDs exist.
+ */
+export async function discoverStatuses(): Promise<{ statusId: number; count: number; sample?: any }[]> {
+  const results: { statusId: number; count: number; sample?: any }[] = [];
+  // Check statuses 1 through 10
+  for (let sid = 1; sid <= 10; sid++) {
+    try {
+      const orders = await fetchOrdersByStatus(sid, 5, 1);
+      if (orders.length > 0) {
+        results.push({
+          statusId: sid,
+          count: orders.length,
+          sample: {
+            ID: orders[0].ID,
+            OrderNumber: orders[0].OrderNumber,
+            OrderDate: orders[0].OrderDate,
+            DespatchDate: orders[0].DespatchDate,
+            OrderStatusId: orders[0].OrderStatusId,
+            CourierServiceName: orders[0].CourierServiceName,
+          },
+        });
+      } else {
+        results.push({ statusId: sid, count: 0 });
+      }
+    } catch (e: any) {
+      results.push({ statusId: sid, count: -1, sample: { error: String(e?.message ?? e).slice(0, 200) } });
+    }
+  }
+  return results;
 }
 
 /**
