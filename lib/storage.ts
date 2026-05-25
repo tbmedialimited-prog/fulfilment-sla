@@ -88,6 +88,22 @@ const memClients = new Map<number, string>();
 const memState = new Map<string, string>();
 
 // ---- Helpers to convert row <-> StoredOrder ----
+// Convert anything Neon throws back (Date object, ISO string, "YYYY-MM-DD HH:MM:SS" string)
+// into a stable ISO string. Neon's HTTP driver returns timestamps as strings.
+function normalizeTs(v: any): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "string") {
+    // "2026-05-25 08:26:46" -> "2026-05-25T08:26:46Z"
+    let s = v;
+    if (s.includes(" ") && !s.includes("T")) s = s.replace(" ", "T");
+    if (!s.endsWith("Z") && !s.includes("+") && !s.match(/-\d\d:\d\d$/)) s = s + "Z";
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? v : d.toISOString();
+  }
+  try { return new Date(v).toISOString(); } catch { return null; }
+}
+
 function rowToOrder(r: any): StoredOrder {
   return {
     id: Number(r.id),
@@ -98,15 +114,15 @@ function rowToOrder(r: any): StoredOrder {
     trackingNumber: r.tracking_number ?? null,
     postcode: r.postcode ?? null,
     countryCode: r.country_code ?? null,
-    orderDate: r.order_date instanceof Date ? r.order_date.toISOString() : (r.order_date ?? ""),
-    despatchDate: r.despatch_date instanceof Date ? r.despatch_date.toISOString() : (r.despatch_date ?? null),
-    deliveredDate: r.delivered_date instanceof Date ? r.delivered_date.toISOString() : (r.delivered_date ?? null),
+    orderDate: normalizeTs(r.order_date) ?? "",
+    despatchDate: normalizeTs(r.despatch_date),
+    deliveredDate: normalizeTs(r.delivered_date),
     orderStatus: r.order_status ?? 0,
     trackingStatus: r.tracking_status ?? null,
     lastEvent: r.last_event ?? null,
-    lastTrackingCheck: r.last_tracking_check instanceof Date ? r.last_tracking_check.toISOString() : (r.last_tracking_check ?? null),
-    firstSeen: r.first_seen instanceof Date ? r.first_seen.toISOString() : (r.first_seen ?? ""),
-    lastUpdated: r.last_updated instanceof Date ? r.last_updated.toISOString() : (r.last_updated ?? ""),
+    lastTrackingCheck: normalizeTs(r.last_tracking_check),
+    firstSeen: normalizeTs(r.first_seen) ?? new Date().toISOString(),
+    lastUpdated: normalizeTs(r.last_updated) ?? new Date().toISOString(),
   };
 }
 
