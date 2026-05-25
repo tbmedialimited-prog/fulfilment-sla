@@ -13,7 +13,7 @@ import { trackDpd } from "@/lib/dpd";
 import { warehouseSlaMet, deliverySlaMet, transitHours } from "@/lib/sla";
 import {
   getOrder, upsertOrder, getAllOrders,
-  setClientName, getSyncState, setSyncState, isKvAvailable,
+  setClientName, getClientName, getSyncState, setSyncState, isKvAvailable,
 } from "@/lib/storage";
 import type { StoredOrder } from "@/lib/storage";
 
@@ -71,11 +71,22 @@ async function syncMintsoftOrders(): Promise<{ fetched: number; inserted: number
   // Get list of dispatched orders
   const orders = await fetchDispatchedOrders({ pageSize: 200 });
 
+  // Cache of client names looked up this run
+  const clientNameCache = new Map<number, string | null>();
+  async function clientNameFor(id: number | null | undefined): Promise<string | null> {
+    if (!id) return null;
+    if (clientNameCache.has(id)) return clientNameCache.get(id)!;
+    const n = await getClientName(id);
+    clientNameCache.set(id, n);
+    return n;
+  }
+
   let inserted = 0, updated = 0;
   for (const m of orders) {
     if (!m.ID) continue;
     const existing = await getOrder(m.ID);
-    const stored = mintsoftToStored(m, existing, existing?.clientName ?? null);
+    const cname = existing?.clientName ?? (await clientNameFor(m.ClientId));
+    const stored = mintsoftToStored(m, existing, cname);
     // Did anything meaningful change?
     if (!existing) {
       await upsertOrder(stored);
@@ -83,7 +94,8 @@ async function syncMintsoftOrders(): Promise<{ fetched: number; inserted: number
     } else if (
       existing.despatchDate !== stored.despatchDate ||
       existing.trackingNumber !== stored.trackingNumber ||
-      existing.orderStatus !== stored.orderStatus
+      existing.orderStatus !== stored.orderStatus ||
+      (cname && existing.clientName !== cname)
     ) {
       await upsertOrder(stored);
       updated += 1;

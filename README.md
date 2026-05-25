@@ -43,14 +43,15 @@ First deploy takes ~90 seconds. You'll get a URL like `sla-dashboard-xyz.vercel.
 
 It will load with empty data — that's expected. Next step adds the database.
 
-### 5. Add Vercel KV (the database)
+### 5. Add the database (Neon Postgres — free)
 
 - In the Vercel dashboard, open your project
-- Click the **Storage** tab → **Create Database** → **KV** (Redis)
-- Name it `sla-kv`, region: pick the closest one (LHR/London if available)
-- Click **Create**, then **Connect to Project** → tick the box, click Connect
+- Click the **Storage** tab → **Create Database**
+- Choose **Neon — Serverless Postgres** (it's free on Vercel Hobby)
+- Click **Continue**, pick a region (London EU-West-2 is closest), accept defaults
+- Click **Connect** → tick your project's box → **Connect**
 
-Vercel auto-injects `KV_REST_API_URL` and `KV_REST_API_TOKEN` env vars. Your project redeploys automatically.
+Vercel auto-injects `DATABASE_URL` (and a few other Postgres env vars). Your project redeploys automatically. The app creates its tables on first sync — no SQL setup needed.
 
 ### 6. Trigger the first sync
 
@@ -58,7 +59,9 @@ Vercel auto-injects `KV_REST_API_URL` and `KV_REST_API_TOKEN` env vars. Your pro
 - Click **Sync now** in the top right
 - Wait ~30 seconds — orders appear
 
-From now on, the cron runs every hour automatically.
+From now on, the cron runs **once daily at 08:00 UTC** automatically (Vercel hobby plan limit). You can hit **Sync now** anytime for an immediate refresh.
+
+If you upgrade to Vercel Pro later, change `vercel.json` to `"schedule": "0 * * * *"` for hourly sync.
 
 ## Local dev (optional)
 
@@ -111,3 +114,4 @@ vercel.json         ← Cron schedule (hourly)
 - **DPD auth failures** → check username/password/account number, ensure password was changed from the temporary one DPD issued
 - **Empty dashboard after sync** → check `/api/cron` response directly: visit `https://your-app.vercel.app/api/cron?key=<your-CRON_SECRET>` and see what it returns
 - **Cron not running** → Vercel cron is enabled on all plans. Check **Settings → Cron Jobs** in the dashboard.
+- **Database connection errors** → ensure `DATABASE_URL` is set (Vercel sets this automatically when you connect Neon)
