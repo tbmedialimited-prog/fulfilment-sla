@@ -6,7 +6,7 @@
 // We try API key first since it's simpler. If it doesn't work, the username/password
 // path is also wired up.
 
-const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpdlocal.co.uk";
+const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpd.co.uk";
 
 interface DPDSession {
   token: string;
@@ -33,7 +33,7 @@ async function getSession(force = false): Promise<string> {
     "Accept": "application/json",
     "Content-Type": "application/json",
   };
-  if (accountNumber) headers["GeoClient"] = `account/${accountNumber}`;
+  if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
 
   const res = await fetch(`${DPD_BASE}/user/?action=login`, {
     method: "POST",
@@ -80,10 +80,10 @@ async function dpdRequest<T>(path: string): Promise<T> {
   for (const attempt of [1, 2]) {
     const session = await getSession(attempt === 2);
     const headers: Record<string, string> = {
-      "GeoSession": session,
+      "GEOSession": session,
       "Accept": "application/json",
     };
-    if (accountNumber) headers["GeoClient"] = `account/${accountNumber}`;
+    if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
 
     const res = await fetch(DPD_BASE + path, { headers, cache: "no-store" });
     if ((res.status === 401 || res.status === 403) && attempt === 1) continue;

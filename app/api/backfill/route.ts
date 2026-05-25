@@ -21,7 +21,7 @@ export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS ?? 30);
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 100; // Mintsoft seems to cap at 100 per page regardless of what we ask
 const MAX_RUNTIME_MS = 50_000; // leave 10s buffer under 60s limit
 
 function normalizeMintsoftDate(s: string | null | undefined): string | null {
@@ -62,6 +62,7 @@ function mintsoftToStored(m: MintsoftOrder, existing: StoredOrder | null, client
 
 export async function GET(req: NextRequest) {
   const started = Date.now();
+  const countOnly = req.nextUrl.searchParams.get("count_only") === "1";
 
   // Statuses to backfill (orders that HAVE a DespatchDate)
   const statusIdsRaw = process.env.MINTSOFT_DISPATCHED_STATUSES || "4,5,6";
@@ -145,6 +146,11 @@ export async function GET(req: NextRequest) {
           allOldOnThisPage = false;
         }
 
+        if (countOnly) {
+          // Skip DB I/O entirely - just count
+          continue;
+        }
+
         const existing = await getOrder(m.ID);
         const cname = existing?.clientName ?? (await clientNameFor(m.ClientId));
         const stored = mintsoftToStored(m, existing, cname);
@@ -167,10 +173,14 @@ export async function GET(req: NextRequest) {
         break;
       }
 
-      // If we got less than a full page, no more data for this status
-      if (orders.length < PAGE_SIZE) {
+      // Stop if API returned ZERO orders (end of data) or way fewer than expected
+      // Mintsoft sometimes returns < PAGE_SIZE even with more data, so we use a small threshold
+      if (orders.length === 0 || orders.length < 5) {
         break;
       }
+
+      // Safety: cap at 200 pages per status (20,000 orders max)
+      if (page > 200) break;
 
       page += 1;
     }
