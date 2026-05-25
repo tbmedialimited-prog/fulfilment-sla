@@ -1,15 +1,7 @@
-v7-backfill
+v9-dpd-debug
 Built: 2026-05-25
-Changes from v6:
-  - NEW: /api/backfill endpoint for loading historical orders (30 days back)
-    * Paginates through Mintsoft statuses 4, 5, 6
-    * Resumable: returns "next_url" if it ran out of time before finishing
-    * Capped to BACKFILL_DAYS=30 days back (configurable via env var)
-  - Status discovery now scans 1-30 instead of 1-10
-  - Daily cron unchanged (it just catches yesterday's new orders)
-
-USAGE:
-  1. Visit /api/backfill
-  2. If response has "done": false, click next_url
-  3. Repeat until "done": true
-  4. Each call processes ~50 seconds; you may need 5-15 calls for 30 days of data
+Changes from v8:
+  - DPD base URL fixed: api.dpd.co.uk (not api.dpdlocal.co.uk) -- correct for ALL UK DPD products
+  - HTTP headers use GEOClient / GEOSession (all caps GEO) per the official Perl client
+  - NEW: /api/dpd-debug?tracking=15976913071805 - tests login + 10 candidate paths
+  - v8 bug fixes still included: pagination, page size 100, count_only mode
