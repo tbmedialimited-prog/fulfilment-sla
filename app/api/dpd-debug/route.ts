@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
     tests: [] as any[],
   };
 
-  // Test 1: Bearer auth
+  // Test 1: Bearer auth against api.dpd.co.uk
   if (apiKey) {
     const bearerHeaders = {
       "Authorization": `Bearer ${apiKey}`,
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Test 2: X-API-Key header
+  // Test 2: X-API-Key header (another common pattern)
   if (apiKey) {
     const headers = { "X-API-Key": apiKey, "Accept": "application/json" };
     const urls = [
@@ -83,7 +83,25 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Test 3: Legacy Basic/Session
+  // Test 3: Legacy Basic/Session auth at api.dpd.co.uk
   if (username && password) {
     const creds = Buffer.from(`${username}:${password}`).toString("base64");
-    const headers: Record<string, stri
+    const headers: Record<string, string> = {
+      "Authorization": `Basic ${creds}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
+    out.tests.push({
+      kind: "basic-login-dpd",
+      ...(await tryUrl("https://api.dpd.co.uk/user/?action=login", headers, "POST")),
+    });
+    await new Promise(r => setTimeout(r, 100));
+    out.tests.push({
+      kind: "basic-login-dpdlocal",
+      ...(await tryUrl("https://api.dpdlocal.co.uk/user/?action=login", headers, "POST")),
+    });
+  }
+
+  return NextResponse.json(out);
+}
