@@ -1,5 +1,5 @@
-// DPD API diagnostic. Tries login and multiple candidate tracking endpoints
-// to discover what works against your account.
+// DPD API diagnostic v2 - tries BOTH auth methods (Basic-then-Session AND Bearer)
+// against several base URLs and endpoint paths.
 //
 // Usage: /api/dpd-debug?tracking=15976913071805
 
@@ -8,97 +8,82 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpd.co.uk";
-
-interface DpdLoginResponse {
-  data?: { geoSession?: string };
-  geoSession?: string;
-  error?: any;
-}
-
-async function login(): Promise<{ ok: boolean; session?: string; raw?: any; status: number; error?: string }> {
-  const username = process.env.DPD_USERNAME;
-  const password = process.env.DPD_PASSWORD;
-  const accountNumber = process.env.DPD_ACCOUNT_NUMBER;
-  if (!username || !password) return { ok: false, status: 0, error: "DPD_USERNAME / DPD_PASSWORD not set" };
-
-  const creds = Buffer.from(`${username}:${password}`).toString("base64");
-  const headers: Record<string, string> = {
-    "Authorization": `Basic ${creds}`,
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-  };
-  if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
-
+async function tryUrl(url: string, headers: Record<string, string>, method = "GET", body?: string) {
   try {
-    const res = await fetch(`${DPD_BASE}/user/?action=login`, { method: "POST", headers, cache: "no-store" });
-    const text = await res.text();
-    let data: any = null;
-    try { data = JSON.parse(text); } catch { /* keep raw text */ }
-    const session = data?.data?.geoSession || data?.geoSession;
-    if (!res.ok || !session) {
-      return { ok: false, status: res.status, raw: data ?? text.slice(0, 500), error: `HTTP ${res.status}` };
-    }
-    return { ok: true, status: res.status, session, raw: { gotSession: true } };
-  } catch (e: any) {
-    return { ok: false, status: 0, error: String(e?.message ?? e) };
-  }
-}
-
-async function tryEndpoint(path: string, session: string): Promise<any> {
-  const accountNumber = process.env.DPD_ACCOUNT_NUMBER;
-  const headers: Record<string, string> = {
-    "GEOSession": session,
-    "Accept": "application/json",
-  };
-  if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
-
-  try {
-    const res = await fetch(DPD_BASE + path, { headers, cache: "no-store" });
+    const res = await fetch(url, { method, headers, body, cache: "no-store" });
     const text = await res.text();
     let data: any = null;
     try { data = JSON.parse(text); } catch { /* */ }
     return {
-      path,
+      url,
+      method,
       status: res.status,
       ok: res.ok,
-      body_preview: data ? JSON.stringify(data).slice(0, 800) : text.slice(0, 800),
+      body_preview: data ? JSON.stringify(data).slice(0, 600) : text.slice(0, 600),
     };
   } catch (e: any) {
-    return { path, status: 0, error: String(e?.message ?? e).slice(0, 200) };
+    return { url, method, status: 0, error: String(e?.message ?? e).slice(0, 200) };
   }
 }
 
 export async function GET(req: NextRequest) {
   const tracking = req.nextUrl.searchParams.get("tracking") || "15976913071805";
-  const out: any = { base: DPD_BASE, tracking };
+  const apiKey = process.env.DPD_API_KEY || "";
+  const username = process.env.DPD_USERNAME || "";
+  const password = process.env.DPD_PASSWORD || "";
+  const accountNumber = process.env.DPD_ACCOUNT_NUMBER || "";
 
-  // Step 1: login
-  const auth = await login();
-  out.login = { ok: auth.ok, status: auth.status, error: auth.error, raw: auth.raw };
-  if (!auth.ok || !auth.session) return NextResponse.json(out);
+  const out: any = {
+    tracking,
+    env: {
+      has_api_key: !!apiKey,
+      has_username: !!username,
+      has_password: !!password,
+      has_account: !!accountNumber,
+    },
+    tests: [] as any[],
+  };
 
-  // Step 2: try various endpoints we think might work
-  const candidates = [
-    `/shipping/shipment/?searchCriteria=${tracking}`,
-    `/shipping/shipment/?searchPage=1&searchPageSize=10&searchType=trackingReferences&searchKeyword=${tracking}`,
-    `/shipping/shipment/_search?searchPage=1&searchPageSize=10&searchType=trackingReferences&searchKeyword=${tracking}`,
-    `/shipping/tracking/?parcel=${tracking}`,
-    `/shipping/tracking/${tracking}`,
-    `/parcels/${tracking}`,
-    `/tracking/${tracking}`,
-    `/tracking/?parcel=${tracking}`,
-    `/parcel/?trackingNumber=${tracking}`,
-    `/v1/tracking/${tracking}`,
-  ];
-
-  out.attempts = [];
-  for (const path of candidates) {
-    const r = await tryEndpoint(path, auth.session);
-    out.attempts.push(r);
-    // Small delay so we don't hammer
-    await new Promise(rs => setTimeout(rs, 200));
+  // Test 1: Bearer auth
+  if (apiKey) {
+    const bearerHeaders = {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+    };
+    const bases = [
+      "https://api.dpd.co.uk",
+      "https://api.dpdlocal.co.uk",
+      "https://developers.api.dpd.co.uk",
+    ];
+    const paths = [
+      `/shipping/shipment/?searchCriteria=${tracking}`,
+      `/shipping/tracking/${tracking}`,
+      `/tracking/${tracking}`,
+      `/v1/tracking/${tracking}`,
+      `/parcels/${tracking}`,
+    ];
+    for (const base of bases) {
+      for (const path of paths) {
+        out.tests.push({ kind: "bearer", ...(await tryUrl(base + path, bearerHeaders)) });
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
   }
 
-  return NextResponse.json(out);
-}
+  // Test 2: X-API-Key header
+  if (apiKey) {
+    const headers = { "X-API-Key": apiKey, "Accept": "application/json" };
+    const urls = [
+      `https://api.dpd.co.uk/tracking/${tracking}`,
+      `https://api.dpdlocal.co.uk/tracking/${tracking}`,
+    ];
+    for (const url of urls) {
+      out.tests.push({ kind: "x-api-key", ...(await tryUrl(url, headers)) });
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+  // Test 3: Legacy Basic/Session
+  if (username && password) {
+    const creds = Buffer.from(`${username}:${password}`).toString("base64");
+    const headers: Record<string, stri
