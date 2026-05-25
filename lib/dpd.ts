@@ -6,7 +6,7 @@
 // We try API key first since it's simpler. If it doesn't work, the username/password
 // path is also wired up.
 
-const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpd.co.uk";
+const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpdlocal.co.uk";
 
 interface DPDSession {
   token: string;
@@ -101,44 +101,59 @@ export async function trackDpd(consignment: string): Promise<DPDTrackingResult> 
     return { consignment, status: "not_found", deliveredAt: null, lastEvent: null };
   }
   try {
+    // Per the official Perl DPD client + our diagnostic results, the correct
+    // search endpoint is /shipping/shipment/?searchCriteria=<reference>
     const search = await dpdRequest<any>(
-      `/shipping/shipment/_search?searchPage=1&searchPageSize=10&searchType=trackingReferences&searchKeyword=${encodeURIComponent(consignment)}`
+      `/shipping/shipment/?searchCriteria=${encodeURIComponent(consignment)}&searchPage=1&searchPageSize=10`
     );
-    const shipments: any[] = search?.data?.shipments ?? [];
+
+    // Response shape varies; try multiple paths to find shipments
+    const shipments: any[] =
+      search?.data?.shipments ??
+      search?.data?.Items ??
+      search?.shipments ??
+      (Array.isArray(search?.data) ? search.data : []) ??
+      [];
+
     if (shipments.length === 0) {
       return { consignment, status: "not_found", deliveredAt: null, lastEvent: null };
     }
     const sh = shipments[0];
-    const shipmentId = sh.shipmentId || sh.shipmentReference;
+    const shipmentId = sh.shipmentId || sh.shipmentReference || sh.id;
 
     let events: any[] = [];
     if (shipmentId) {
       try {
-        const history = await dpdRequest<any>(`/shipping/shipment/${shipmentId}/tracking`);
-        events = history?.data?.trackingEvent ?? [];
+        // Tracking detail. Try the documented path first.
+        const history = await dpdRequest<any>(`/shipping/shipment/${shipmentId}/tracking/`);
+        events = history?.data?.trackingEvent ?? history?.data?.events ?? history?.trackingEvent ?? [];
       } catch {
-        // Ignore — search response may have enough
+        // Some versions don't expose this — fall back to search-level info
       }
     }
 
     let deliveredAt: string | null = null;
     let lastEvent: string | null = null;
     for (const ev of events) {
-      const desc = (ev.trackingEventStatus || ev.trackingEventDescription || "").toLowerCase();
+      const desc = (ev.trackingEventStatus || ev.trackingEventDescription || ev.status || "").toLowerCase();
       if (!desc) continue;
-      lastEvent = ev.trackingEventStatus || ev.trackingEventDescription || lastEvent;
+      lastEvent = ev.trackingEventStatus || ev.trackingEventDescription || ev.status || lastEvent;
       if (DELIVERED_KEYWORDS.some(kw => desc.includes(kw))) {
-        const dt = parseDpdDateTime(ev.trackingEventDateTime || ev.trackingEventDate);
+        const dt = parseDpdDateTime(ev.trackingEventDateTime || ev.trackingEventDate || ev.dateTime);
         if (dt) deliveredAt = dt;
       }
     }
     // Fallback: top-level deliveredDateTime
     if (!deliveredAt) {
-      const dt = parseDpdDateTime(sh?.deliveryDetails?.notificationDetails?.deliveredDateTime);
+      const dt = parseDpdDateTime(
+        sh?.deliveryDetails?.notificationDetails?.deliveredDateTime ??
+        sh?.deliveredDateTime ??
+        sh?.deliveryDate
+      );
       if (dt) deliveredAt = dt;
     }
 
-    const trackingStatus: string = (sh.trackingStatus || "").toLowerCase();
+    const trackingStatus: string = (sh.trackingStatus || sh.status || "").toLowerCase();
     let status: DPDTrackingStatus;
     if (deliveredAt) status = "delivered";
     else if (trackingStatus.includes("exception") || trackingStatus.includes("problem")) status = "exception";

@@ -1,5 +1,7 @@
-// DPD API diagnostic v2 - tries BOTH auth methods (Basic-then-Session AND Bearer)
-// against several base URLs and endpoint paths.
+// DPD diagnostic v3 - now that we know the right flow:
+// 1. POST /user/?action=login with Basic auth -> get geoSession
+// 2. GET /shipping/shipment/?searchCriteria=<tracking> with GEOSession header
+// 3. GET /shipping/shipment/<id>/tracking/ with GEOSession header
 //
 // Usage: /api/dpd-debug?tracking=15976913071805
 
@@ -8,99 +10,131 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-async function tryUrl(url: string, headers: Record<string, string>, method = "GET", body?: string) {
-  try {
-    const res = await fetch(url, { method, headers, body, cache: "no-store" });
-    const text = await res.text();
-    let data: any = null;
-    try { data = JSON.parse(text); } catch { /* */ }
-    return {
-      url,
-      method,
-      status: res.status,
-      ok: res.ok,
-      body_preview: data ? JSON.stringify(data).slice(0, 600) : text.slice(0, 600),
-    };
-  } catch (e: any) {
-    return { url, method, status: 0, error: String(e?.message ?? e).slice(0, 200) };
-  }
-}
+const DPD_BASE = process.env.DPD_BASE_URL || "https://api.dpdlocal.co.uk";
 
 export async function GET(req: NextRequest) {
   const tracking = req.nextUrl.searchParams.get("tracking") || "15976913071805";
-  const apiKey = process.env.DPD_API_KEY || "";
   const username = process.env.DPD_USERNAME || "";
   const password = process.env.DPD_PASSWORD || "";
   const accountNumber = process.env.DPD_ACCOUNT_NUMBER || "";
 
-  const out: any = {
-    tracking,
-    env: {
-      has_api_key: !!apiKey,
-      has_username: !!username,
-      has_password: !!password,
-      has_account: !!accountNumber,
-    },
-    tests: [] as any[],
-  };
+  const out: any = { tracking, base: DPD_BASE };
 
-  // Test 1: Bearer auth against api.dpd.co.uk
-  if (apiKey) {
-    const bearerHeaders = {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
+  // Step 1: Login
+  const creds = Buffer.from(`${username}:${password}`).toString("base64");
+  const loginHeaders: Record<string, string> = {
+    "Authorization": `Basic ${creds}`,
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+  };
+  if (accountNumber) loginHeaders["GEOClient"] = `account/${accountNumber}`;
+
+  let session: string | null = null;
+  try {
+    const loginRes = await fetch(`${DPD_BASE}/user/?action=login`, {
+      method: "POST",
+      headers: loginHeaders,
+      cache: "no-store",
+    });
+    const loginData = await loginRes.json();
+    session = loginData?.data?.geoSession || loginData?.geoSession;
+    out.step1_login = {
+      status: loginRes.status,
+      ok: loginRes.ok,
+      got_session: !!session,
     };
-    const bases = [
-      "https://api.dpd.co.uk",
-      "https://api.dpdlocal.co.uk",
-      "https://developers.api.dpd.co.uk",
+    if (!session) {
+      out.step1_login.raw_body = JSON.stringify(loginData).slice(0, 500);
+      return NextResponse.json(out);
+    }
+  } catch (e: any) {
+    out.step1_login = { error: String(e?.message ?? e) };
+    return NextResponse.json(out);
+  }
+
+  // Step 2: Search shipment by tracking reference
+  const authHeaders: Record<string, string> = {
+    "GEOSession": session,
+    "Accept": "application/json",
+  };
+  if (accountNumber) authHeaders["GEOClient"] = `account/${accountNumber}`;
+
+  // Try multiple search query patterns
+  const searchPaths = [
+    `/shipping/shipment/?searchCriteria=${encodeURIComponent(tracking)}`,
+    `/shipping/shipment/?searchCriteria=${encodeURIComponent(tracking)}&searchPage=1&searchPageSize=10`,
+    `/shipping/shipment?searchCriteria=${encodeURIComponent(tracking)}`,
+  ];
+  out.step2_search = [];
+  let shipmentId: string | number | null = null;
+  let shipment: any = null;
+  for (const path of searchPaths) {
+    try {
+      const res = await fetch(DPD_BASE + path, { headers: authHeaders, cache: "no-store" });
+      const text = await res.text();
+      let data: any = null;
+      try { data = JSON.parse(text); } catch { /* */ }
+      const attempt: any = {
+        path,
+        status: res.status,
+        ok: res.ok,
+        body_keys: data && typeof data === "object" ? Object.keys(data).slice(0, 10) : null,
+        body_preview: text.slice(0, 800),
+      };
+      // Try to find shipment ID in the response
+      const ships =
+        data?.data?.shipments ??
+        data?.data?.Items ??
+        data?.shipments ??
+        (Array.isArray(data?.data) ? data.data : null);
+      if (ships && ships.length > 0) {
+        attempt.found_count = ships.length;
+        attempt.first_ship_keys = Object.keys(ships[0]).slice(0, 20);
+        shipmentId = ships[0].shipmentId || ships[0].shipmentReference || ships[0].id;
+        shipment = ships[0];
+        attempt.shipment_id = shipmentId;
+      }
+      out.step2_search.push(attempt);
+      if (shipmentId) break;
+    } catch (e: any) {
+      out.step2_search.push({ path, error: String(e?.message ?? e) });
+    }
+  }
+
+  // Step 3: Get tracking events for shipment (if found)
+  if (shipmentId) {
+    const trackPaths = [
+      `/shipping/shipment/${shipmentId}/tracking/`,
+      `/shipping/shipment/${shipmentId}/tracking`,
+      `/shipping/shipment/${shipmentId}/`,
+      `/shipping/shipment/${shipmentId}`,
     ];
-    const paths = [
-      `/shipping/shipment/?searchCriteria=${tracking}`,
-      `/shipping/tracking/${tracking}`,
-      `/tracking/${tracking}`,
-      `/v1/tracking/${tracking}`,
-      `/parcels/${tracking}`,
-    ];
-    for (const base of bases) {
-      for (const path of paths) {
-        out.tests.push({ kind: "bearer", ...(await tryUrl(base + path, bearerHeaders)) });
-        await new Promise(r => setTimeout(r, 100));
+    out.step3_tracking = [];
+    for (const path of trackPaths) {
+      try {
+        const res = await fetch(DPD_BASE + path, { headers: authHeaders, cache: "no-store" });
+        const text = await res.text();
+        let data: any = null;
+        try { data = JSON.parse(text); } catch { /* */ }
+        out.step3_tracking.push({
+          path,
+          status: res.status,
+          ok: res.ok,
+          body_keys: data && typeof data === "object" ? Object.keys(data).slice(0, 10) : null,
+          data_keys: data?.data && typeof data.data === "object" ? Object.keys(data.data).slice(0, 20) : null,
+          body_preview: text.slice(0, 1200),
+        });
+      } catch (e: any) {
+        out.step3_tracking.push({ path, error: String(e?.message ?? e) });
       }
     }
+  } else {
+    out.step3_tracking = "skipped - no shipment ID found";
   }
 
-  // Test 2: X-API-Key header (another common pattern)
-  if (apiKey) {
-    const headers = { "X-API-Key": apiKey, "Accept": "application/json" };
-    const urls = [
-      `https://api.dpd.co.uk/tracking/${tracking}`,
-      `https://api.dpdlocal.co.uk/tracking/${tracking}`,
-    ];
-    for (const url of urls) {
-      out.tests.push({ kind: "x-api-key", ...(await tryUrl(url, headers)) });
-      await new Promise(r => setTimeout(r, 100));
-    }
-  }
-
-  // Test 3: Legacy Basic/Session auth at api.dpd.co.uk
-  if (username && password) {
-    const creds = Buffer.from(`${username}:${password}`).toString("base64");
-    const headers: Record<string, string> = {
-      "Authorization": `Basic ${creds}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-    };
-    if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
-    out.tests.push({
-      kind: "basic-login-dpd",
-      ...(await tryUrl("https://api.dpd.co.uk/user/?action=login", headers, "POST")),
-    });
-    await new Promise(r => setTimeout(r, 100));
-    out.tests.push({
-      kind: "basic-login-dpdlocal",
-      ...(await tryUrl("https://api.dpdlocal.co.uk/user/?action=login", headers, "POST")),
-    });
+  // Include sample shipment object for reference
+  if (shipment) {
+    out.sample_shipment = JSON.stringify(shipment).slice(0, 1500);
   }
 
   return NextResponse.json(out);

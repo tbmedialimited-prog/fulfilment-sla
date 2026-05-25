@@ -1,13 +1,15 @@
-v10-dpd-bearer
+v11-dpd-correct-base
 Built: 2026-05-25
-Changes from v9:
-  - /api/dpd-debug now tests BOTH auth methods:
-    * Bearer token (modern developers.api.dpd.co.uk style)
-    * X-API-Key header
-    * Legacy Basic/Session (api.dpd.co.uk username/password)
-  - Tests against 3 base URLs: api.dpd.co.uk, api.dpdlocal.co.uk, developers.api.dpd.co.uk
-  - Tests 5 candidate paths per base = 15 bearer attempts + 2 X-API-Key + 2 Basic logins
-  - Total 19 attempts in one call, shows which combo works
+Changes from v10:
+  - DPD base URL back to api.dpdlocal.co.uk (confirmed working by diagnostic)
+  - DPD tracking endpoint: /shipping/shipment/?searchCriteria=<tracking>
+    (was using wrong _search endpoint before)
+  - DPD search response parser handles multiple JSON shapes
+  - /api/dpd-debug v3 now does end-to-end test: login -> search -> tracking detail
+    and shows you the actual response shape so we can fine-tune field extraction
 
-ENV VAR NEEDED:
-  DPD_API_KEY (set this in Vercel to your portal API key)
+NEXT STEP:
+  1. Visit /api/dpd-debug?tracking=15976913071805
+  2. Should see step1_login.ok=true, step2_search with found shipment,
+     step3_tracking with delivery events
+  3. Paste the response - we'll see if data flows
