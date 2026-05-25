@@ -194,7 +194,7 @@ export async function GET(req: NextRequest) {
 
   // Compute SLA flags on all orders (cheap, in-memory)
   try {
-    const orders = await getAllOrders(5000);
+    const orders = await getAllOrders(2000);
     out.total_orders = orders.length;
     out.with_delivery = orders.filter(o => o.deliveredDate).length;
   } catch (e: any) { out.aggregate_error = String(e?.message ?? e); }

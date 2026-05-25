@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const orders = await getAllOrders(5000);
+    const orders = await getAllOrders(2000);
     return NextResponse.json({
       total: orders.length,
       first_5: orders.slice(0, 5).map(o => ({

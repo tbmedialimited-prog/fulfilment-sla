@@ -1,7 +1,9 @@
-v4-debug-deeper
+v5-limit-fix
 Built: 2026-05-25
-Changes from v3:
-  - Enhanced /api/debug to trace the filter step-by-step
-  - Added /api/raw to dump orders with NO filtering applied
-  
-If /api/raw shows your 109 orders but /api/orders shows 0, the bug is in the filter logic.
+Changes from v4:
+  - getAllOrders now uses sql(queryString) function form instead of tagged template
+    (Neon serverless driver has issues parameterizing LIMIT in tagged templates)
+  - Default limit reduced from 5000 to 2000 across all callers
+  - safeLimit inlined directly into SQL (validated as integer first)
+
+This should fix the "/api/raw returns 0 orders" issue.

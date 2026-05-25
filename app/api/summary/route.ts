@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   const courierFilter = req.nextUrl.searchParams.get("courier");
 
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
-  const all = await getAllOrders(5000);
+  const all = await getAllOrders(2000);
 
   const orders = all.filter(o => {
     if (!o.orderDate) return false;

@@ -184,12 +184,17 @@ export async function upsertOrder(o: StoredOrder): Promise<void> {
   `;
 }
 
-export async function getAllOrders(limit = 5000): Promise<StoredOrder[]> {
+export async function getAllOrders(limit = 1000): Promise<StoredOrder[]> {
   const q = getSql();
   if (!q) return Array.from(memOrders.values()).slice(0, limit);
   await ensureSchema();
-  const rows = await q`SELECT * FROM orders ORDER BY order_date DESC NULLS LAST LIMIT ${limit}`;
-  return rows.map(rowToOrder);
+  // Coerce limit to a safe positive integer and inline it directly into SQL.
+  // Neon serverless driver's tagged-template mode has issues parameterizing LIMIT.
+  const safeLimit = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 1000)));
+  const rows = await (q as any)(
+    `SELECT * FROM orders ORDER BY order_date DESC NULLS LAST LIMIT ${safeLimit}`
+  );
+  return (rows as any[]).map(rowToOrder);
 }
 
 export async function setClientName(id: number, name: string): Promise<void> {
