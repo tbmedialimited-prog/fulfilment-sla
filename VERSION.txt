@@ -1,17 +1,15 @@
-v12-public-tracker
+v13-parcelcode-quest
 Built: 2026-05-25
-KEY DISCOVERY:
-  The PUBLIC DPD Local tracker API lives at:
-  https://apis.track.dpdlocal.co.uk/v1/...
-  (Source: Pen Test Partners security research from 2026-01-13)
+KEY DISCOVERY (with credit to user):
+  Real working DPD tracking URL format:
+  https://track.dpdlocal.co.uk/parcels/<tracking>*<5-digit-suffix>
+  
+  Example: 15976912925627*21327 for postcode GL103WB
+  The 21327 is NOT derived from the postcode - it's stored somewhere
+  (most likely returned by Mintsoft on order detail).
 
-  This is what their public web tracker uses - takes consignment number +
-  postcode and returns delivery JSON. No login/account needed.
-
-Changes from v11:
-  - /api/dpd-debug v5 hits apis.track.dpdlocal.co.uk plus 4 related bases
-    with 10 path patterns each = 50 attempts
-  - Filters response to "interesting" (non-404, has body)
-
-Usage:
-  /api/dpd-debug?tracking=15976912925627&postcode=GL103WB
+Changes:
+  - NEW /api/mintsoft-detail?id=<orderId>
+    Tests 7 Mintsoft order detail endpoints to find the field that
+    contains the parcelCode suffix
+  - /api/dpd-debug v6 - tests parcelCode = tracking*<suffix> variations
