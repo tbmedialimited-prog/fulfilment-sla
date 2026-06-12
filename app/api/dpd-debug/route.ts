@@ -1,7 +1,6 @@
-// DPD v23 - using the CORRECT endpoints per Andy at DPD:
-//   Login: POST https://api.customers.dpd.co.uk/v1/customer/auth/access
-//   Track: POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
-//   client-id = the API key from the developer portal
+// DPD v24 - debugging which credentials Vercel is actually using.
+// Shows env var fingerprints (without revealing secrets) so we know
+// whether the right values are in place.
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,144 +9,136 @@ export const dynamic = "force-dynamic";
 
 const BASE = "https://api.customers.dpd.co.uk";
 
-async function doLogin() {
-  const apiKey = process.env.DPD_API_KEY || "";
-  const username = process.env.DPD_USERNAME || "";
-  const password = process.env.DPD_PASSWORD || "";
-
-  // Try a few auth formats since we don't know the exact body shape yet
-  const variants: Array<{ label: string; method: string; headers: Record<string, string>; body: string | null }> = [
-    {
-      label: "Basic auth + client-id, no body",
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
-        "client-id": apiKey,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: null,
-    },
-    {
-      label: "Basic auth + client-id, empty JSON body",
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
-        "client-id": apiKey,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    },
-    {
-      label: "JSON body with username+password, client-id header",
-      method: "POST",
-      headers: {
-        "client-id": apiKey,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ username, password }),
-    },
-    {
-      label: "JSON body with email + apiKey, no client-id",
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ username, password, apiKey }),
-    },
-  ];
-
-  const results: any[] = [];
-  let session: string | null = null;
-  let workingVariant: any = null;
-
-  for (const v of variants) {
-    try {
-      const res = await fetch(`${BASE}/v1/customer/auth/access`, {
-        method: v.method,
-        headers: v.headers,
-        body: v.body || undefined,
-        cache: "no-store",
-      });
-      const text = await res.text();
-      let parsed: any = null;
-      try { parsed = JSON.parse(text); } catch {}
-      const tok =
-        parsed?.data?.accessToken ??
-        parsed?.accessToken ??
-        parsed?.data?.geoSession ??
-        parsed?.geoSession ??
-        parsed?.access_token ??
-        parsed?.token ??
-        null;
-      results.push({
-        label: v.label,
-        status: res.status,
-        got_token: !!tok,
-        preview: parsed ? JSON.stringify(parsed).slice(0, 500) : text.slice(0, 400),
-      });
-      if (tok && !session) {
-        session = tok;
-        workingVariant = v.label;
-      }
-    } catch (e: any) {
-      results.push({ label: v.label, status: 0, error: String(e?.message ?? e).slice(0, 200) });
-    }
-    await new Promise(r => setTimeout(r, 150));
-  }
-
-  return { session, workingVariant, results };
+function fingerprint(s: string | undefined): string {
+  if (!s) return "EMPTY";
+  if (s.length < 4) return `(${s.length} chars)`;
+  return `${s.slice(0, 4)}...${s.slice(-2)} (${s.length} chars)`;
 }
 
-async function tryTrack(authValue: string, clientId: string, parcelNumber: string) {
+function detectUserType(u: string): string {
+  if (!u) return "missing";
+  if (u.includes("@")) return "email (looks like dev portal login)";
+  if (/^[a-z]+\d+$/i.test(u)) return "legacy shipping username (e.g. thefulfilment2)";
+  return "unknown format";
+}
+
+async function tryLogin(label: string, headers: Record<string, string>, body: string | null = null) {
   try {
-    const res = await fetch(`${BASE}/v1/customer/parcel/tracking`, {
+    const res = await fetch(`${BASE}/v1/customer/auth/access`, {
       method: "POST",
-      headers: {
-        "Authorization": authValue,
-        "client-id": clientId,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ parcelNumbers: [parcelNumber] }),
+      headers,
+      body: body ?? undefined,
       cache: "no-store",
     });
     const text = await res.text();
     let parsed: any = null;
     try { parsed = JSON.parse(text); } catch {}
+    const tok = parsed?.data?.accessToken ?? parsed?.accessToken ?? parsed?.access_token ?? parsed?.token ?? null;
     return {
+      label,
       status: res.status,
-      bodyLength: text.length,
-      preview: parsed ? JSON.stringify(parsed, null, 2).slice(0, 3000) : text.slice(0, 800),
+      got_token: !!tok,
+      preview: parsed ? JSON.stringify(parsed).slice(0, 400) : text.slice(0, 400),
     };
   } catch (e: any) {
-    return { status: 0, error: String(e?.message ?? e).slice(0, 200) };
+    return { label, status: 0, error: String(e?.message ?? e).slice(0, 200) };
   }
 }
 
 export async function GET(req: NextRequest) {
-  const tracking = req.nextUrl.searchParams.get("tracking") || "15976913071805";
+  const username = process.env.DPD_USERNAME || "";
+  const password = process.env.DPD_PASSWORD || "";
   const apiKey = process.env.DPD_API_KEY || "";
 
-  const out: any = { tracking };
+  const out: any = {
+    env_check: {
+      DPD_USERNAME: {
+        fingerprint: fingerprint(username),
+        type: detectUserType(username),
+        is_email: username.includes("@"),
+      },
+      DPD_PASSWORD: {
+        fingerprint: fingerprint(password),
+      },
+      DPD_API_KEY: {
+        fingerprint: fingerprint(apiKey),
+        looks_correct: apiKey.startsWith("LSIb2"),
+      },
+    },
+    login_attempts: [] as any[],
+  };
 
-  // Step 1: Login at the NEW endpoint
-  const auth = await doLogin();
-  out.login_attempts = auth.results;
-  out.login_working_variant = auth.workingVariant;
-  out.got_session = !!auth.session;
-
-  if (!auth.session) {
+  if (!username || !password) {
+    out.error = "DPD_USERNAME or DPD_PASSWORD env vars are empty";
     return NextResponse.json(out);
   }
 
-  // Step 2: Track with the access token + client-id header
-  out.track_bearer = await tryTrack(`Bearer ${auth.session}`, apiKey, tracking);
-  await new Promise(r => setTimeout(r, 200));
-  out.track_raw = await tryTrack(auth.session, apiKey, tracking);
+  const creds = Buffer.from(`${username}:${password}`).toString("base64");
+
+  // Standard Basic auth + client-id
+  out.login_attempts.push(await tryLogin(
+    "Basic auth + client-id header",
+    {
+      "Authorization": `Basic ${creds}`,
+      "client-id": apiKey,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+  ));
+
+  // Maybe the API expects email in body instead
+  out.login_attempts.push(await tryLogin(
+    "client-id only, email/password in body",
+    {
+      "client-id": apiKey,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    JSON.stringify({ email: username, password }),
+  ));
+
+  // OAuth-style grant
+  out.login_attempts.push(await tryLogin(
+    "Bearer apiKey + email/password in body",
+    {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    JSON.stringify({ email: username, password }),
+  ));
+
+  // What if creds need to be in the body alongside grant_type
+  out.login_attempts.push(await tryLogin(
+    "client-id + grant_type=password in body",
+    {
+      "client-id": apiKey,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    JSON.stringify({ grant_type: "password", username, password }),
+  ));
+
+  // form-encoded
+  try {
+    const formBody = new URLSearchParams({ username, password, grant_type: "password", client_id: apiKey });
+    const res = await fetch(`${BASE}/v1/customer/auth/access`, {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+      body: formBody.toString(),
+      cache: "no-store",
+    });
+    const text = await res.text();
+    let parsed: any = null;
+    try { parsed = JSON.parse(text); } catch {}
+    out.login_attempts.push({
+      label: "form-encoded oauth grant",
+      status: res.status,
+      preview: parsed ? JSON.stringify(parsed).slice(0, 400) : text.slice(0, 400),
+    });
+  } catch (e: any) {
+    out.login_attempts.push({ label: "form-encoded oauth grant", error: String(e?.message ?? e) });
+  }
 
   return NextResponse.json(out);
 }
