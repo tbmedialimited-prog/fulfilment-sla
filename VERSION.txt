@@ -1,17 +1,6 @@
-v20-multi-account
+v21-email-clientid
 Built: 2026-06-12
-
-NEW INSIGHT (from user's Mintsoft screenshot):
-  Each client has their OWN DPD account number:
-  - default: 3023118
-  - AU_Sullivan: 3026126
-  - IGLU: 3029553
-  - Vilgain: 3025796  (this is what we have in env)
-  - WatchStraps: 3029187
-
-  This means we may need DIFFERENT credentials per client to track their parcels.
-
-This version tests every plausible client-id value:
-  - JWT claims: publicKey, auth_key, user_id, dpd_account
-  - All 5 known account numbers
-  - The DPD_API_KEY from the developer portal
+Tests 12 candidate values for client-id:
+  - tadeas.gencur@fulfilmentexperts.co.uk
+  - tadeas.gencur (local part)
+  - Various other email + company name variants
