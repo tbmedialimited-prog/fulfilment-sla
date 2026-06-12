@@ -1,24 +1,10 @@
-v16-dpd-real-endpoint
-Built: 2026-05-26
+v17-client-id-hunt
+Built: 2026-06-12
 
-CONFIRMED BY DPD (Andy Smith, 2026-05-26):
-  - Login: POST https://api.dpdlocal.co.uk/user/?action=login (Basic auth) -> geoSession
-  - Track: POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
-    with GEOSession header, body has one of 4 search params:
-      * parcelNumbers: [...]            <- we use this
-      * customerReference + postcode
-      * customerReference
-      * searchKey
-  - The *XXXXX suffix in track URLs is meaningless internal noise - ignore it
-  - Webhooks would disable customer notifications, so we're staying with polling
+Progress so far:
+  ✓ Login works -> geoSession
+  ✓ Right endpoint: api.customers.dpd.co.uk/v1/customer/parcel/tracking
+  ✗ Missing header: "client-id"
 
-Changes from v15:
-  - lib/dpd.ts: rewritten to use api.customers.dpd.co.uk endpoint
-    Added trackDpdBulk() for batch tracking lookups (more efficient)
-  - /api/dpd-debug: tests all 4 search parameter combinations
-    so we can verify which return data for parcels created via Mintsoft
-
-NEXT STEP:
-  1. Visit /api/dpd-debug
-  2. Find which "label" returns status 200 with real parcel data
-  3. Confirm the result, then turn on DPD tracking in the cron
+This version tests 6 header name variants x 3 value formats = 18 combinations
+to find what DPD's "client-id" header expects.

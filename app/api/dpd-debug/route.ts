@@ -1,7 +1,5 @@
-// DPD diagnostic v9 - uses the OFFICIAL endpoint confirmed by Andy at DPD:
-// POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
-//
-// Tries all 4 search parameter combinations to find what returns data for your parcels.
+// DPD diagnostic v10 - same auth + endpoint, but now adding the client-id header
+// in various forms to find what DPD expects.
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -32,101 +30,77 @@ async function login(): Promise<{ session: string | null; status: number; raw?: 
   }
 }
 
-async function trackAttempt(session: string, body: any, label: string) {
-  const account = process.env.DPD_ACCOUNT_NUMBER || "";
+async function tryTrack(session: string, body: any, clientIdValue: string, clientIdHeader: string) {
   const headers: Record<string, string> = {
     "GEOSession": session,
     "Accept": "application/json",
     "Content-Type": "application/json",
+    [clientIdHeader]: clientIdValue,
   };
-  if (account) headers["GEOClient"] = `account/${account}`;
 
-  // Try POST first (most common for "tracking" lookup with body)
   try {
-    const postRes = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking`, {
+    const res = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      cache: "no-store",
-    });
-    const text = await postRes.text();
-    let parsed: any = null;
-    try { parsed = JSON.parse(text); } catch {}
-    return {
-      label,
-      method: "POST",
-      body,
-      status: postRes.status,
-      bodyLength: text.length,
-      preview: parsed ? JSON.stringify(parsed).slice(0, 1500) : text.slice(0, 600),
-    };
-  } catch (e: any) {
-    return { label, method: "POST", body, status: 0, error: String(e?.message ?? e).slice(0, 200) };
-  }
-}
-
-async function trackAttemptGet(session: string, queryString: string, label: string) {
-  const account = process.env.DPD_ACCOUNT_NUMBER || "";
-  const headers: Record<string, string> = {
-    "GEOSession": session,
-    "Accept": "application/json",
-  };
-  if (account) headers["GEOClient"] = `account/${account}`;
-
-  try {
-    const res = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking?${queryString}`, {
-      method: "GET",
-      headers,
       cache: "no-store",
     });
     const text = await res.text();
     let parsed: any = null;
     try { parsed = JSON.parse(text); } catch {}
     return {
-      label,
-      method: "GET",
-      queryString,
+      headerName: clientIdHeader,
+      headerValue: clientIdValue,
+      body,
       status: res.status,
       bodyLength: text.length,
-      preview: parsed ? JSON.stringify(parsed).slice(0, 1500) : text.slice(0, 600),
+      preview: parsed ? JSON.stringify(parsed).slice(0, 1200) : text.slice(0, 500),
     };
   } catch (e: any) {
-    return { label, method: "GET", queryString, status: 0, error: String(e?.message ?? e).slice(0, 200) };
+    return { headerName: clientIdHeader, headerValue: clientIdValue, body, status: 0, error: String(e?.message ?? e).slice(0, 200) };
   }
 }
 
 export async function GET(req: NextRequest) {
   const tracking = req.nextUrl.searchParams.get("tracking") || "15976913071805";
-  const postcode = req.nextUrl.searchParams.get("postcode") || "GL103WB";
-  const orderRef = req.nextUrl.searchParams.get("ref") || "638686901";
+  const account = process.env.DPD_ACCOUNT_NUMBER || "3025796";
 
-  const out: any = { tracking, postcode, orderRef, attempts: [] as any[] };
+  const out: any = { tracking, account, attempts: [] as any[] };
 
   const auth = await login();
   out.login = { status: auth.status, got_session: !!auth.session };
   if (!auth.session) {
-    out.login.raw = auth.raw;
     return NextResponse.json(out);
   }
 
-  // Try all 4 documented search parameter combinations
-  out.attempts.push(await trackAttempt(auth.session, { parcelNumbers: [tracking] }, "POST parcelNumbers"));
-  await new Promise(r => setTimeout(r, 200));
-  out.attempts.push(await trackAttempt(auth.session, { customerReference: orderRef, postcode }, "POST customerReference+postcode"));
-  await new Promise(r => setTimeout(r, 200));
-  out.attempts.push(await trackAttempt(auth.session, { customerReference: orderRef }, "POST customerReference"));
-  await new Promise(r => setTimeout(r, 200));
-  out.attempts.push(await trackAttempt(auth.session, { searchKey: tracking }, "POST searchKey"));
-  await new Promise(r => setTimeout(r, 200));
+  // Header name variations to try (DPD inconsistently spells)
+  const headerNames = ["client-id", "clientId", "Client-Id", "ClientId", "X-Client-Id", "x-client-id"];
 
-  // Also try GET with query string variants (in case the API is GET-based)
-  out.attempts.push(await trackAttemptGet(auth.session, `parcelNumber=${tracking}`, "GET parcelNumber"));
-  await new Promise(r => setTimeout(r, 200));
-  out.attempts.push(await trackAttemptGet(auth.session, `parcelNumbers=${tracking}`, "GET parcelNumbers"));
-  await new Promise(r => setTimeout(r, 200));
-  out.attempts.push(await trackAttemptGet(auth.session, `customerReference=${orderRef}&postcode=${postcode}`, "GET customerReference+postcode"));
-  await new Promise(r => setTimeout(r, 200));
+  // Value variations to try
+  const headerValues = [
+    account,                    // just "3025796"
+    `account/${account}`,       // "account/3025796"
+    `client/${account}`,        // "client/3025796"
+  ];
+
+  const body = { parcelNumbers: [tracking] };
+
+  // Try each header name with each value variant
+  for (const hName of headerNames) {
+    for (const hValue of headerValues) {
+      out.attempts.push(await tryTrack(auth.session, body, hValue, hName));
+      await new Promise(r => setTimeout(r, 150));
+      // Early exit if one works
+      const last = out.attempts[out.attempts.length - 1];
+      if (last.status === 200 && last.bodyLength > 50) {
+        out.success_found = last;
+        break;
+      }
+    }
+    if (out.success_found) break;
+  }
 
   out.successes = out.attempts.filter((a: any) => a.status === 200 && a.bodyLength > 50);
+  out.non_400_errors = out.attempts.filter((a: any) => a.status !== 400 && a.status !== 200);
   return NextResponse.json(out);
 }
