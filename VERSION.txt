@@ -1,23 +1,17 @@
-v18-auth-hunt
+v20-multi-account
 Built: 2026-06-12
 
-Progress:
-  ✓ Endpoint confirmed: api.customers.dpd.co.uk/v1/customer/parcel/tracking
-  ✓ Login works (returns geoSession)
-  ✓ "client-id" header (lowercase, hyphen) is correct
-  ✗ Still need "authorization" header value
+NEW INSIGHT (from user's Mintsoft screenshot):
+  Each client has their OWN DPD account number:
+  - default: 3023118
+  - AU_Sullivan: 3026126
+  - IGLU: 3029553
+  - Vilgain: 3025796  (this is what we have in env)
+  - WatchStraps: 3029187
 
-Tests 7 auth combinations:
-  - Bearer <apiKey>
-  - Raw <apiKey>
-  - Token <apiKey>
-  - Bearer <geoSession>
-  - Raw <geoSession>
-  - Basic <user:pass>
-  - Bearer <geoSession> + GEOSession header
-  - Bearer <apiKey> + GEOSession header
+  This means we may need DIFFERENT credentials per client to track their parcels.
 
-One of these MUST be it. Find it -> we're done with DPD.
-
-PREREQUISITE: DPD_API_KEY env var must be set in Vercel
-  Value: LSIb2nGNo0wKMaAGafK0U3ydWNqmYzZUPYqtEBwyFx20ChK6
+This version tests every plausible client-id value:
+  - JWT claims: publicKey, auth_key, user_id, dpd_account
+  - All 5 known account numbers
+  - The DPD_API_KEY from the developer portal
