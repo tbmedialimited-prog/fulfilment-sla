@@ -1,81 +1,153 @@
-// DPD v21 - try email address as client-id (user's developer portal login)
+// DPD v23 - using the CORRECT endpoints per Andy at DPD:
+//   Login: POST https://api.customers.dpd.co.uk/v1/customer/auth/access
+//   Track: POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
+//   client-id = the API key from the developer portal
+
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-const LOGIN_BASE = "https://api.dpdlocal.co.uk";
-const TRACK_BASE = "https://api.customers.dpd.co.uk";
+const BASE = "https://api.customers.dpd.co.uk";
 
-async function login() {
+async function doLogin() {
+  const apiKey = process.env.DPD_API_KEY || "";
   const username = process.env.DPD_USERNAME || "";
   const password = process.env.DPD_PASSWORD || "";
-  const account = process.env.DPD_ACCOUNT_NUMBER || "";
-  const creds = Buffer.from(`${username}:${password}`).toString("base64");
-  const headers: Record<string, string> = {
-    "Authorization": `Basic ${creds}`,
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-  };
-  if (account) headers["GEOClient"] = `account/${account}`;
-  try {
-    const res = await fetch(`${LOGIN_BASE}/user/?action=login`, { method: "POST", headers, cache: "no-store" });
-    const d = await res.json();
-    return d?.data?.geoSession || null;
-  } catch { return null; }
-}
 
-async function tryTrack(authValue: string, clientIdValue: string, label: string) {
-  try {
-    const res = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking`, {
+  // Try a few auth formats since we don't know the exact body shape yet
+  const variants: Array<{ label: string; method: string; headers: Record<string, string>; body: string | null }> = [
+    {
+      label: "Basic auth + client-id, no body",
       method: "POST",
       headers: {
-        "Authorization": authValue,
-        "client-id": clientIdValue,
+        "Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+        "client-id": apiKey,
         "Accept": "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ parcelNumbers: ["15976913071805"] }),
+      body: null,
+    },
+    {
+      label: "Basic auth + client-id, empty JSON body",
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+        "client-id": apiKey,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    },
+    {
+      label: "JSON body with username+password, client-id header",
+      method: "POST",
+      headers: {
+        "client-id": apiKey,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username, password }),
+    },
+    {
+      label: "JSON body with email + apiKey, no client-id",
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username, password, apiKey }),
+    },
+  ];
+
+  const results: any[] = [];
+  let session: string | null = null;
+  let workingVariant: any = null;
+
+  for (const v of variants) {
+    try {
+      const res = await fetch(`${BASE}/v1/customer/auth/access`, {
+        method: v.method,
+        headers: v.headers,
+        body: v.body || undefined,
+        cache: "no-store",
+      });
+      const text = await res.text();
+      let parsed: any = null;
+      try { parsed = JSON.parse(text); } catch {}
+      const tok =
+        parsed?.data?.accessToken ??
+        parsed?.accessToken ??
+        parsed?.data?.geoSession ??
+        parsed?.geoSession ??
+        parsed?.access_token ??
+        parsed?.token ??
+        null;
+      results.push({
+        label: v.label,
+        status: res.status,
+        got_token: !!tok,
+        preview: parsed ? JSON.stringify(parsed).slice(0, 500) : text.slice(0, 400),
+      });
+      if (tok && !session) {
+        session = tok;
+        workingVariant = v.label;
+      }
+    } catch (e: any) {
+      results.push({ label: v.label, status: 0, error: String(e?.message ?? e).slice(0, 200) });
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+
+  return { session, workingVariant, results };
+}
+
+async function tryTrack(authValue: string, clientId: string, parcelNumber: string) {
+  try {
+    const res = await fetch(`${BASE}/v1/customer/parcel/tracking`, {
+      method: "POST",
+      headers: {
+        "Authorization": authValue,
+        "client-id": clientId,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ parcelNumbers: [parcelNumber] }),
       cache: "no-store",
     });
     const text = await res.text();
     let parsed: any = null;
     try { parsed = JSON.parse(text); } catch {}
-    return { label, client_id: clientIdValue, status: res.status, preview: parsed ? JSON.stringify(parsed).slice(0, 500) : text.slice(0, 200) };
+    return {
+      status: res.status,
+      bodyLength: text.length,
+      preview: parsed ? JSON.stringify(parsed, null, 2).slice(0, 3000) : text.slice(0, 800),
+    };
   } catch (e: any) {
-    return { label, status: 0, error: String(e?.message ?? e).slice(0, 200) };
+    return { status: 0, error: String(e?.message ?? e).slice(0, 200) };
   }
 }
 
 export async function GET(req: NextRequest) {
-  const out: any = { attempts: [] as any[] };
-  const session = await login();
-  if (!session) { out.error = "login failed"; return NextResponse.json(out); }
+  const tracking = req.nextUrl.searchParams.get("tracking") || "15976913071805";
+  const apiKey = process.env.DPD_API_KEY || "";
 
-  const candidates = [
-    "tadeas.gencur@fulfilmentexperts.co.uk",
-    "tadeas.gencur",
-    "thefulfilment2",
-    "info@fulfilmentexperts.co.uk",
-    "feri.urban@tbmediagroup.co.uk",
-    "fulfilmentexperts",
-    "fulfilment-experts",
-    "TheFulfilmentExperts",
-    "fulfilmentexperts.co.uk",
-    "thefulfilment",
-    "Fulfilment Experts",
-    "FULFILMENT EXPERTS",
-  ];
+  const out: any = { tracking };
 
-  for (const c of candidates) {
-    out.attempts.push(await tryTrack(`Bearer ${session}`, c, c));
-    await new Promise(r => setTimeout(r, 150));
-    const last = out.attempts[out.attempts.length - 1];
-    if (last.status === 200) {
-      out.SUCCESS = last;
-      break;
-    }
+  // Step 1: Login at the NEW endpoint
+  const auth = await doLogin();
+  out.login_attempts = auth.results;
+  out.login_working_variant = auth.workingVariant;
+  out.got_session = !!auth.session;
+
+  if (!auth.session) {
+    return NextResponse.json(out);
   }
-  out.successes = out.attempts.filter((a: any) => a.status === 200);
+
+  // Step 2: Track with the access token + client-id header
+  out.track_bearer = await tryTrack(`Bearer ${auth.session}`, apiKey, tracking);
+  await new Promise(r => setTimeout(r, 200));
+  out.track_raw = await tryTrack(auth.session, apiKey, tracking);
+
   return NextResponse.json(out);
 }

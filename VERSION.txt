@@ -1,6 +1,17 @@
-v21-email-clientid
+v23-dpd-finally
 Built: 2026-06-12
-Tests 12 candidate values for client-id:
-  - tadeas.gencur@fulfilmentexperts.co.uk
-  - tadeas.gencur (local part)
-  - Various other email + company name variants
+
+ANSWER FROM ANDY (2026-06-12):
+  Login endpoint: POST https://api.customers.dpd.co.uk/v1/customer/auth/access
+  client-id = the API key from the dev portal (LSIb2nGNo0wKMaAGafK0U3yd...)
+
+Changes:
+  - lib/dpd.ts: rewritten to use api.customers.dpd.co.uk for BOTH login and tracking
+    Login: Basic auth + client-id header -> accessToken
+    Track: Bearer accessToken + client-id header + body { parcelNumbers: [...] }
+  - /api/dpd-debug: tests login then tracks one parcel end-to-end
+
+PREREQUISITE in Vercel env vars:
+  DPD_API_KEY=LSIb2nGNo0wKMaAGafK0U3ydWNqmYzZUPYqtEBwyFx20ChK6
+  DPD_USERNAME=thefulfilment2
+  DPD_PASSWORD=TFEvildpd25

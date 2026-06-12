@@ -1,20 +1,14 @@
-// DPD Local tracking client.
+// DPD Local tracking client - using the NEW customers API.
 //
-// Per direct guidance from Andy Smith at DPD (2026-05-26):
-//   1. Login: POST https://api.dpdlocal.co.uk/user/?action=login (Basic auth) -> geoSession
-//   2. Track:  POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
-//              with the geoSession token, body specifies one of 4 search params.
-//
-// The 4 supported search parameters (per DPD API portal):
-//   - parcelNumbers: array of parcel numbers (e.g. ["15976913071805"])
-//   - customerReference + postcode: order ref + recipient postcode
-//   - customerReference: just the order ref
-//   - searchKey: their proprietary identifier
-//
-// We use parcelNumbers since we have those from Mintsoft.
+// Per Andy at DPD (2026-06-12):
+//   1. Login: POST https://api.customers.dpd.co.uk/v1/customer/auth/access
+//      with Basic auth (username:password) + "client-id" header (= DPD_API_KEY)
+//      → returns accessToken
+//   2. Track: POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
+//      with Authorization: Bearer <accessToken> + "client-id" header
+//      Body: { parcelNumbers: [...] }
 
-const LOGIN_BASE = process.env.DPD_LOGIN_BASE || "https://api.dpdlocal.co.uk";
-const TRACK_BASE = process.env.DPD_TRACK_BASE || "https://api.customers.dpd.co.uk";
+const BASE = process.env.DPD_BASE_URL || "https://api.customers.dpd.co.uk";
 
 interface DPDSession {
   token: string;
@@ -22,38 +16,45 @@ interface DPDSession {
 }
 
 let cachedSession: DPDSession | null = null;
-const SESSION_TTL_MS = 25 * 60 * 1000;
+const SESSION_TTL_MS = 25 * 60 * 1000; // 25 minutes
 
-async function getSession(force = false): Promise<string> {
+async function getAccessToken(force = false): Promise<string> {
   const now = Date.now();
   if (!force && cachedSession && (now - cachedSession.obtainedAt) < SESSION_TTL_MS) {
     return cachedSession.token;
   }
   const username = process.env.DPD_USERNAME;
   const password = process.env.DPD_PASSWORD;
-  const accountNumber = process.env.DPD_ACCOUNT_NUMBER;
+  const apiKey = process.env.DPD_API_KEY;
   if (!username || !password) throw new Error("DPD_USERNAME / DPD_PASSWORD not set");
+  if (!apiKey) throw new Error("DPD_API_KEY not set (this is the client-id from the DPD developer portal)");
 
   const creds = Buffer.from(`${username}:${password}`).toString("base64");
   const headers: Record<string, string> = {
     "Authorization": `Basic ${creds}`,
+    "client-id": apiKey,
     "Accept": "application/json",
     "Content-Type": "application/json",
   };
-  if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
 
-  const res = await fetch(`${LOGIN_BASE}/user/?action=login`, {
+  const res = await fetch(`${BASE}/v1/customer/auth/access`, {
     method: "POST",
     headers,
     cache: "no-store",
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`DPD login failed: ${res.status} ${text.slice(0, 200)}`);
+    throw new Error(`DPD auth/access failed: ${res.status} ${text.slice(0, 300)}`);
   }
   const data = await res.json();
-  const token = data?.data?.geoSession || data?.geoSession;
-  if (!token) throw new Error(`DPD login: no geoSession in response`);
+  const token =
+    data?.data?.accessToken ??
+    data?.accessToken ??
+    data?.data?.geoSession ??
+    data?.geoSession ??
+    data?.access_token ??
+    data?.token;
+  if (!token) throw new Error(`DPD auth/access: no token in response: ${JSON.stringify(data).slice(0, 200)}`);
   cachedSession = { token, obtainedAt: now };
   return token;
 }
@@ -72,7 +73,7 @@ const DELIVERED_KEYWORDS = ["delivered", "out for delivery completed", "consignm
 function parseDpdDateTime(s: string | null | undefined): string | null {
   if (!s) return null;
   try {
-    const d = new Date(typeof s === "string" && !s.endsWith("Z") && !s.includes("+") ? s : s);
+    const d = new Date(s);
     if (Number.isNaN(d.getTime())) return null;
     return d.toISOString();
   } catch {
@@ -80,40 +81,57 @@ function parseDpdDateTime(s: string | null | undefined): string | null {
   }
 }
 
-/**
- * Track a single DPD parcel by its parcel number (14-digit tracking number).
- * Uses the endpoint Andy at DPD confirmed: api.customers.dpd.co.uk/v1/customer/parcel/tracking
- */
+function parseParcelResponse(p: any, fallbackConsignment: string): DPDTrackingResult {
+  const events: any[] = p.trackingEvents ?? p.events ?? p.trackingEvent ?? [];
+  let deliveredAt: string | null = null;
+  let lastEvent: string | null = null;
+  for (const ev of events) {
+    const desc = (ev.status || ev.trackingEventStatus || ev.description || ev.trackingEventDescription || "").toLowerCase();
+    if (!desc) continue;
+    lastEvent = ev.status || ev.trackingEventStatus || ev.description || lastEvent;
+    if (DELIVERED_KEYWORDS.some(kw => desc.includes(kw))) {
+      const dt = parseDpdDateTime(ev.dateTime || ev.trackingEventDateTime || ev.eventDateTime);
+      if (dt) deliveredAt = dt;
+    }
+  }
+  if (!deliveredAt) {
+    const dt = parseDpdDateTime(p.deliveredDateTime ?? p.deliveryDateTime ?? p?.deliveryDetails?.deliveredDateTime);
+    if (dt) deliveredAt = dt;
+  }
+
+  const ts: string = (p.parcelStatus || p.status || p.trackingStatus || "").toLowerCase();
+  let status: DPDTrackingStatus;
+  if (deliveredAt) status = "delivered";
+  else if (ts.includes("exception") || ts.includes("problem") || ts.includes("failed")) status = "exception";
+  else if (ts) status = "in_transit";
+  else status = "pending";
+
+  const consignment = p.parcelNumber ?? p.consignmentNumber ?? p.trackingNumber ?? fallbackConsignment;
+  return { consignment, status, deliveredAt, lastEvent: lastEvent ?? p.parcelStatus ?? p.status ?? null };
+}
+
 export async function trackDpd(consignment: string): Promise<DPDTrackingResult> {
   if (!consignment) {
     return { consignment, status: "not_found", deliveredAt: null, lastEvent: null };
   }
 
+  const apiKey = process.env.DPD_API_KEY || "";
+
   for (const attempt of [1, 2]) {
     try {
-      const session = await getSession(attempt === 2);
-      const accountNumber = process.env.DPD_ACCOUNT_NUMBER;
-      const headers: Record<string, string> = {
-        "GEOSession": session,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      };
-      if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
-
-      // Per DPD API portal, the tracking endpoint accepts the search params
-      // as a POST body. We're using parcelNumbers as the lookup key.
-      const body = JSON.stringify({
-        parcelNumbers: [consignment],
-      });
-
-      const res = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking`, {
+      const token = await getAccessToken(attempt === 2);
+      const res = await fetch(`${BASE}/v1/customer/parcel/tracking`, {
         method: "POST",
-        headers,
-        body,
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "client-id": apiKey,
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ parcelNumbers: [consignment] }),
         cache: "no-store",
       });
 
-      // If unauthorized on first attempt, retry with a fresh session
       if ((res.status === 401 || res.status === 403) && attempt === 1) {
         cachedSession = null;
         continue;
@@ -121,12 +139,7 @@ export async function trackDpd(consignment: string): Promise<DPDTrackingResult> 
 
       const text = await res.text();
       if (!res.ok) {
-        return {
-          consignment,
-          status: "not_found",
-          deliveredAt: null,
-          lastEvent: `HTTP ${res.status}: ${text.slice(0, 200)}`,
-        };
+        return { consignment, status: "not_found", deliveredAt: null, lastEvent: `HTTP ${res.status}: ${text.slice(0, 200)}` };
       }
 
       let data: any;
@@ -134,11 +147,8 @@ export async function trackDpd(consignment: string): Promise<DPDTrackingResult> 
         return { consignment, status: "not_found", deliveredAt: null, lastEvent: "invalid JSON response" };
       }
 
-      // Parse the response. DPD's tracking response shape (best guess, defensive parsing):
-      // { data: { parcels: [{ trackingEvents: [{ status, dateTime, description }], status, deliveredDateTime }] } }
       const parcels: any[] =
         data?.data?.parcels ??
-        data?.data?.parcel ??
         data?.parcels ??
         (Array.isArray(data?.data) ? data.data : []) ??
         [];
@@ -146,91 +156,34 @@ export async function trackDpd(consignment: string): Promise<DPDTrackingResult> 
       if (parcels.length === 0) {
         return { consignment, status: "not_found", deliveredAt: null, lastEvent: "no parcels in response" };
       }
-      const p = parcels[0];
-
-      // Find delivery time from events
-      const events: any[] = p.trackingEvents ?? p.events ?? p.trackingEvent ?? [];
-      let deliveredAt: string | null = null;
-      let lastEvent: string | null = null;
-      for (const ev of events) {
-        const desc = (ev.status || ev.trackingEventStatus || ev.description || ev.trackingEventDescription || "").toLowerCase();
-        if (!desc) continue;
-        lastEvent = ev.status || ev.trackingEventStatus || ev.description || lastEvent;
-        if (DELIVERED_KEYWORDS.some(kw => desc.includes(kw))) {
-          const dt = parseDpdDateTime(ev.dateTime || ev.trackingEventDateTime || ev.trackingEventDate);
-          if (dt) deliveredAt = dt;
-        }
-      }
-
-      // Fallback: top-level delivered timestamp
-      if (!deliveredAt) {
-        const dt = parseDpdDateTime(
-          p.deliveredDateTime ??
-          p.deliveryDateTime ??
-          p?.deliveryDetails?.deliveredDateTime ??
-          p?.deliveryDetails?.notificationDetails?.deliveredDateTime
-        );
-        if (dt) deliveredAt = dt;
-      }
-
-      const trackingStatus: string = (p.parcelStatus || p.status || p.trackingStatus || "").toLowerCase();
-      let status: DPDTrackingStatus;
-      if (deliveredAt) status = "delivered";
-      else if (trackingStatus.includes("exception") || trackingStatus.includes("problem") || trackingStatus.includes("failed")) status = "exception";
-      else if (trackingStatus) status = "in_transit";
-      else status = "pending";
-
-      return {
-        consignment,
-        status,
-        deliveredAt,
-        lastEvent: lastEvent ?? p.parcelStatus ?? p.status ?? null,
-      };
+      return parseParcelResponse(parcels[0], consignment);
     } catch (e: any) {
       if (attempt === 2) {
-        console.warn(`DPD tracking failed for ${consignment}:`, e?.message);
-        return {
-          consignment,
-          status: "not_found",
-          deliveredAt: null,
-          lastEvent: String(e?.message ?? e).slice(0, 200),
-        };
+        return { consignment, status: "not_found", deliveredAt: null, lastEvent: String(e?.message ?? e).slice(0, 200) };
       }
     }
   }
   return { consignment, status: "not_found", deliveredAt: null, lastEvent: "unreachable" };
 }
 
-/**
- * Bulk tracking — track multiple parcels in one API call.
- * Returns results keyed by consignment number.
- *
- * This is more efficient than calling trackDpd N times since DPD's API
- * accepts an array of parcel numbers in a single call.
- */
 export async function trackDpdBulk(consignments: string[]): Promise<Map<string, DPDTrackingResult>> {
   const out = new Map<string, DPDTrackingResult>();
   if (consignments.length === 0) return out;
-
-  // Strip duplicates and empties
   const unique = Array.from(new Set(consignments.filter(Boolean)));
+  const apiKey = process.env.DPD_API_KEY || "";
 
   for (const attempt of [1, 2]) {
     try {
-      const session = await getSession(attempt === 2);
-      const accountNumber = process.env.DPD_ACCOUNT_NUMBER;
-      const headers: Record<string, string> = {
-        "GEOSession": session,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      };
-      if (accountNumber) headers["GEOClient"] = `account/${accountNumber}`;
-
-      const body = JSON.stringify({ parcelNumbers: unique });
-      const res = await fetch(`${TRACK_BASE}/v1/customer/parcel/tracking`, {
+      const token = await getAccessToken(attempt === 2);
+      const res = await fetch(`${BASE}/v1/customer/parcel/tracking`, {
         method: "POST",
-        headers,
-        body,
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "client-id": apiKey,
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ parcelNumbers: unique }),
         cache: "no-store",
       });
 
@@ -254,39 +207,11 @@ export async function trackDpdBulk(consignments: string[]): Promise<Map<string, 
         (Array.isArray(data?.data) ? data.data : []) ??
         [];
 
-      // Index parcels by their parcel number for lookup
       for (const p of parcels) {
         const num = p.parcelNumber ?? p.consignmentNumber ?? p.trackingNumber;
         if (!num) continue;
-
-        const events: any[] = p.trackingEvents ?? p.events ?? [];
-        let deliveredAt: string | null = null;
-        let lastEvent: string | null = null;
-        for (const ev of events) {
-          const desc = (ev.status || ev.description || "").toLowerCase();
-          if (!desc) continue;
-          lastEvent = ev.status || ev.description || lastEvent;
-          if (DELIVERED_KEYWORDS.some(kw => desc.includes(kw))) {
-            const dt = parseDpdDateTime(ev.dateTime || ev.eventDateTime);
-            if (dt) deliveredAt = dt;
-          }
-        }
-        if (!deliveredAt) {
-          const dt = parseDpdDateTime(p.deliveredDateTime ?? p.deliveryDateTime);
-          if (dt) deliveredAt = dt;
-        }
-
-        const ts: string = (p.parcelStatus || p.status || "").toLowerCase();
-        let status: DPDTrackingStatus;
-        if (deliveredAt) status = "delivered";
-        else if (ts.includes("exception") || ts.includes("problem")) status = "exception";
-        else if (ts) status = "in_transit";
-        else status = "pending";
-
-        out.set(num, { consignment: num, status, deliveredAt, lastEvent: lastEvent ?? p.parcelStatus ?? null });
+        out.set(num, parseParcelResponse(p, num));
       }
-
-      // Anything not returned by DPD = not found
       for (const c of unique) {
         if (!out.has(c)) {
           out.set(c, { consignment: c, status: "not_found", deliveredAt: null, lastEvent: null });
