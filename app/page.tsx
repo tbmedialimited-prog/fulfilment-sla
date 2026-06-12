@@ -77,6 +77,7 @@ export default function Dashboard() {
   const [days, setDays] = useState(30);
   const [courierFilter, setCourierFilter] = useState<string>("");
   const [clientFilter, setClientFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -94,10 +95,13 @@ export default function Dashboard() {
       if (courierFilter) params.set("courier", courierFilter);
       if (clientFilter) params.set("client", clientFilter);
 
+      const ordersParams = new URLSearchParams(params);
+      if (statusFilter) ordersParams.set("status", statusFilter);
+
       const [sumRes, byCRes, ordRes] = await Promise.all([
         fetch(`/api/summary?${params}`).then(r => r.json()),
         fetch(`/api/by-client?${new URLSearchParams({ days: String(days), ...(courierFilter && { courier: courierFilter }) })}`).then(r => r.json()),
-        fetch(`/api/orders?${params}&limit=100`).then(r => r.json()),
+        fetch(`/api/orders?${ordersParams}&limit=100`).then(r => r.json()),
       ]);
       setSummary(sumRes);
       setByClient(byCRes);
@@ -109,7 +113,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [days, courierFilter, clientFilter]);
+  }, [days, courierFilter, clientFilter, statusFilter]);
 
   const triggerSync = async () => {
     setRefreshing(true);
@@ -148,7 +152,8 @@ export default function Dashboard() {
         </h1>
         <div className="meta">
           {lastUpdated && <>Last loaded: <strong>{lastUpdated.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</strong><br /></>}
-          Auto-sync hourly · {totalOrders} orders in view<br />
+          Auto-sync daily at 08:00 UTC · {totalOrders} orders in view<br />
+          <a href="/backfill" style={{ color: "var(--accent)", textDecoration: "underline" }}>Run historical backfill →</a><br />
           {syncMessage && <strong style={{ color: syncMessage.startsWith("⚠") || syncMessage.startsWith("Sync failed") ? "var(--bad)" : "var(--good)" }}>{syncMessage}</strong>}
         </div>
       </header>
@@ -163,6 +168,11 @@ export default function Dashboard() {
           <button className={!courierFilter ? "active" : ""} onClick={() => setCourierFilter("")}>All carriers</button>
           <button className={courierFilter === "dpd" ? "active" : ""} onClick={() => setCourierFilter("dpd")}>DPD only</button>
           <button className={courierFilter === "royal mail" ? "active" : ""} onClick={() => setCourierFilter("royal mail")}>Royal Mail</button>
+        </div>
+        <div className="filter-group">
+          <button className={!statusFilter ? "active" : ""} onClick={() => setStatusFilter("")}>All status</button>
+          <button className={statusFilter === "breached" ? "active" : ""} onClick={() => setStatusFilter("breached")}>Breaches</button>
+          <button className={statusFilter === "in_transit" ? "active" : ""} onClick={() => setStatusFilter("in_transit")}>In transit</button>
         </div>
         {clientOptions.length > 0 && (
           <select className="filter" value={clientFilter} onChange={e => setClientFilter(e.target.value)}>
@@ -192,13 +202,27 @@ export default function Dashboard() {
             </div>
             <div className="kpi">
               <div className="label">Delivery SLA (DPD)</div>
-              <div className={`value ${pctClass(summary.delivery_sla.rate) === "good" ? "pct-good" : pctClass(summary.delivery_sla.rate) === "warn" ? "pct-warn" : "pct-bad"}`}>
-                {fmtPct(summary.delivery_sla.rate)}
-              </div>
-              <div className="sub">
-                <span>{summary.delivery_sla.met} of {summary.delivery_sla.eligible} on time</span>
-                <span>next working day</span>
-              </div>
+              {summary.delivery_sla.eligible === 0 ? (
+                <>
+                  <div className="value" style={{ fontSize: 18, color: "var(--ink-mute)", paddingTop: 14, lineHeight: 1.3 }}>
+                    Awaiting DPD<br />integration
+                  </div>
+                  <div className="sub">
+                    <span style={{ fontSize: 11 }}>Tracking endpoint pending</span>
+                    <span></span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className={`value ${pctClass(summary.delivery_sla.rate) === "good" ? "pct-good" : pctClass(summary.delivery_sla.rate) === "warn" ? "pct-warn" : "pct-bad"}`}>
+                    {fmtPct(summary.delivery_sla.rate)}
+                  </div>
+                  <div className="sub">
+                    <span>{summary.delivery_sla.met} of {summary.delivery_sla.eligible} on time</span>
+                    <span>next working day</span>
+                  </div>
+                </>
+              )}
             </div>
             <div className="kpi">
               <div className="label">Median Transit</div>
@@ -230,8 +254,8 @@ export default function Dashboard() {
         {byClient.length === 0 ? (
           <div className="empty">
             <h3>No orders yet</h3>
-            <p>Click <code>Sync now</code> to pull orders from Mintsoft.</p>
-            <p>If that fails, check environment variables in Vercel: <code>MINTSOFT_API_KEY</code>, <code>KV_REST_API_URL</code>, <code>KV_REST_API_TOKEN</code>.</p>
+            <p>Click <code>Sync now</code> to pull today's dispatched orders from Mintsoft, or use <a href="/backfill" style={{ color: "var(--accent)" }}>Run historical backfill</a> for the last 30 days.</p>
+            <p>If sync fails, check Vercel environment variables: <code>MINTSOFT_API_KEY</code> and <code>DATABASE_URL</code>.</p>
           </div>
         ) : (
           <table>

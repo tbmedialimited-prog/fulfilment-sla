@@ -1,15 +1,24 @@
-v13-parcelcode-quest
-Built: 2026-05-25
-KEY DISCOVERY (with credit to user):
-  Real working DPD tracking URL format:
-  https://track.dpdlocal.co.uk/parcels/<tracking>*<5-digit-suffix>
-  
-  Example: 15976912925627*21327 for postcode GL103WB
-  The 21327 is NOT derived from the postcode - it's stored somewhere
-  (most likely returned by Mintsoft on order detail).
+v16-dpd-real-endpoint
+Built: 2026-05-26
 
-Changes:
-  - NEW /api/mintsoft-detail?id=<orderId>
-    Tests 7 Mintsoft order detail endpoints to find the field that
-    contains the parcelCode suffix
-  - /api/dpd-debug v6 - tests parcelCode = tracking*<suffix> variations
+CONFIRMED BY DPD (Andy Smith, 2026-05-26):
+  - Login: POST https://api.dpdlocal.co.uk/user/?action=login (Basic auth) -> geoSession
+  - Track: POST https://api.customers.dpd.co.uk/v1/customer/parcel/tracking
+    with GEOSession header, body has one of 4 search params:
+      * parcelNumbers: [...]            <- we use this
+      * customerReference + postcode
+      * customerReference
+      * searchKey
+  - The *XXXXX suffix in track URLs is meaningless internal noise - ignore it
+  - Webhooks would disable customer notifications, so we're staying with polling
+
+Changes from v15:
+  - lib/dpd.ts: rewritten to use api.customers.dpd.co.uk endpoint
+    Added trackDpdBulk() for batch tracking lookups (more efficient)
+  - /api/dpd-debug: tests all 4 search parameter combinations
+    so we can verify which return data for parcels created via Mintsoft
+
+NEXT STEP:
+  1. Visit /api/dpd-debug
+  2. Find which "label" returns status 200 with real parcel data
+  3. Confirm the result, then turn on DPD tracking in the cron
