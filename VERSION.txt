@@ -1,10 +1,23 @@
-v17-client-id-hunt
+v18-auth-hunt
 Built: 2026-06-12
 
-Progress so far:
-  ✓ Login works -> geoSession
-  ✓ Right endpoint: api.customers.dpd.co.uk/v1/customer/parcel/tracking
-  ✗ Missing header: "client-id"
+Progress:
+  ✓ Endpoint confirmed: api.customers.dpd.co.uk/v1/customer/parcel/tracking
+  ✓ Login works (returns geoSession)
+  ✓ "client-id" header (lowercase, hyphen) is correct
+  ✗ Still need "authorization" header value
 
-This version tests 6 header name variants x 3 value formats = 18 combinations
-to find what DPD's "client-id" header expects.
+Tests 7 auth combinations:
+  - Bearer <apiKey>
+  - Raw <apiKey>
+  - Token <apiKey>
+  - Bearer <geoSession>
+  - Raw <geoSession>
+  - Basic <user:pass>
+  - Bearer <geoSession> + GEOSession header
+  - Bearer <apiKey> + GEOSession header
+
+One of these MUST be it. Find it -> we're done with DPD.
+
+PREREQUISITE: DPD_API_KEY env var must be set in Vercel
+  Value: LSIb2nGNo0wKMaAGafK0U3ydWNqmYzZUPYqtEBwyFx20ChK6
